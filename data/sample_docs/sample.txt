@@ -1,0 +1,3 @@
+Enterprise Hybrid RAG Chatbot & Semantic Search Suite is an advanced AI system. 
+It uses LangChain, Qdrant, BM25, and Cross-Encoder for high-precision retrieval. 
+Groq API is used for zero-cost LLM generation.

@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from app.config import settings
 from app.ingestion import DocumentIngestionPipeline
 from app.chunking import AdvancedChunkingEngine
-from app.hybrid_search import HybridRetrievalEngine
+from app.hybrid_search import HybridSearchEngine
 from app.chain import EnterpriseRAGChain
 
 app = FastAPI(title=settings.PROJECT_NAME, version="1.0.0")
@@ -15,7 +15,7 @@ raw_docs = ingestion_pipeline.load_documents()
 chunker = AdvancedChunkingEngine()
 chunked_docs = chunker.split_documents(raw_docs)
 
-retrieval_engine = HybridRetrievalEngine(documents=chunked_docs)
+retrieval_engine = HybridSearchEngine(documents=chunked_docs)
 rag_chain = EnterpriseRAGChain(retrieval_engine=retrieval_engine)
 
 class QueryRequest(BaseModel):

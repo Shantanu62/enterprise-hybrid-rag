@@ -2,13 +2,13 @@ from typing import Dict, Any, List
 from langchain_groq import ChatGroq
 from langchain_core.prompts import PromptTemplate
 from app.config import settings
-from app.hybrid_search import HybridRetrievalEngine
+from app.hybrid_search import HybridSearchEngine
 from app.reranker import RerankingPipeline
 from app.cache import SemanticCacheManager
 
 
 class EnterpriseRAGChain:
-    def __init__(self, retrieval_engine: HybridRetrievalEngine):
+    def __init__(self, retrieval_engine: HybridSearchEngine):
         self.retrieval_engine = retrieval_engine
         self.reranker = RerankingPipeline()
         self.cache_manager = SemanticCacheManager()

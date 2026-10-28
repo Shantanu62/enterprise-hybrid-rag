@@ -21,7 +21,7 @@ rag_chain = EnterpriseRAGChain(retrieval_engine=retrieval_engine)
 class QueryRequest(BaseModel):
     query: str
 
-@app.post("/api/v1/chat")
+@app.post("/chat")
 def chat_endpoint(request: QueryRequest):
     try:
         result = rag_chain.run(request.query)
@@ -31,4 +31,4 @@ def chat_endpoint(request: QueryRequest):
 
 @app.get("/health")
 def health_check():
-    return {"status": "healthy", "project": settings.PROJECT_NAME}
+    return {"status": "healthy", "service": settings.PROJECT_NAME}

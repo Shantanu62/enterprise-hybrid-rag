@@ -1,0 +1,17 @@
+
+streamlit
+fastapi
+uvicorn[standard]
+groq
+qdrant-client
+fastembed
+rank-bm25
+sentence-transformers
+pypdf
+python-docx
+python-multipart
+python-dotenv
+pydantic
+httpx
+pytest
+PyMuPDF

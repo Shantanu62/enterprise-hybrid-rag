@@ -1,0 +1,7 @@
+
+Information Security Policy
+
+Sensitive customer data must be encrypted during transmission and storage.
+Access to confidential information must follow the principle of least privilege.
+Employees must report suspected phishing emails to the security team.
+Company data must not be uploaded to unauthorized external services.

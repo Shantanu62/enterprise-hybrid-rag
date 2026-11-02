@@ -1,0 +1,51 @@
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Python virtual environments
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Git
+.git/
+.gitignore
+
+# IDE and operating system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local data and uploads
+data/qdrant/
+data/uploads/
+test_uploads/
+streamlit_upload_test.txt
+
+# Backups and local diagnostics
+backups/
+*.log
+*.log.*
+vector_score_backup.py
+verify_owner.py
+check_tenant_state.py
+inspect_db.py
+inspect_password_column.py
+
+# Streamlit local secrets
+.streamlit/secrets.toml
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+Dockerfile.backup/
+Dockerfile.backup

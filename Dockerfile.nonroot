@@ -1,0 +1,9 @@
+﻿FROM enterprise-hybrid-rag-backend:latest
+RUN groupadd --gid 10001 appuser \
+    && useradd --no-log-init --uid 10001 --gid 10001 \
+       --create-home --home-dir /home/appuser \
+       --shell /usr/sbin/nologin appuser \
+    && mkdir -p /home/appuser/.cache /home/appuser/.streamlit \
+    && chown -R appuser:appuser /home/appuser
+ENV HOME=/home/appuser
+USER appuser

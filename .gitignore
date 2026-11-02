@@ -1,35 +1,49 @@
-
 # Environment variables and secrets
 .env
 .env.*
 !.env.example
-
 # Python virtual environments
 .venv/
 venv/
-
 # Python cache
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .coverage
 htmlcov/
-
 # Uploaded documents and local vector data
 data/qdrant/
 data/uploads/
-
 # IDE and operating system files
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
-
 # Logs
 *.log
+*.log.*
 # Local backup files
 backups/
-# Local backup scripts
 vector_score_backup.py
 # Invalid sample document
 data/sample_docs/sample.docx
+# Local integration test uploads
+test_uploads/
+streamlit_upload_test.txt
+# Local owner verification and diagnostic scripts
+verify_owner.py
+check_tenant_state.py
+inspect_db.py
+inspect_password_column.py
+# Streamlit secrets
+.streamlit/secrets.toml
+# Local database files
+*.db
+*.sqlite
+*.sqlite3
+
+docker-uploads-backup/
+
+Dockerfile.backup
+
+docker-compose.yml.backup

@@ -1,0 +1,49 @@
+﻿
+services:
+  backend:
+    image: enterprise-hybrid-rag-nonroot:latest
+    container_name: enterprise-rag-backend
+    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:8000:8000"
+    restart: unless-stopped
+    volumes:
+      - ./data/uploads:/app/data/uploads
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  frontend:
+    image: enterprise-hybrid-rag-nonroot:latest
+    container_name: enterprise-rag-frontend
+    command: streamlit run app.py --server.address 0.0.0.0 --server.port 8501
+    env_file:
+      - .env
+    environment:
+      API_BASE_URL: http://backend:8000
+    ports:
+      - "127.0.0.1:8501:8501"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=5)"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+

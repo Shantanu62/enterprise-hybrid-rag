@@ -13,7 +13,7 @@ load_dotenv()
 
 
 class RAGService:
-    """Generate grounded answers using hybrid search and reranking."""
+    """Generate grounded answers using tenant-scoped retrieval."""
 
     def __init__(
         self,
@@ -32,7 +32,9 @@ class RAGService:
             )
 
         if retrieval_limit <= 0 or final_source_limit <= 0:
-            raise ValueError("Retrieval and source limits must be positive.")
+            raise ValueError(
+                "Retrieval and source limits must be positive."
+            )
 
         self.client = Groq(api_key=api_key)
         self.model_name = model_name
@@ -44,6 +46,13 @@ class RAGService:
         self.reranker = CrossEncoder(reranker_model)
 
         self.last_metrics: dict[str, float] = {}
+
+    @staticmethod
+    def _validate_tenant_id(tenant_id: str) -> str:
+        if not isinstance(tenant_id, str) or not tenant_id.strip():
+            raise ValueError("tenant_id must not be empty.")
+
+        return tenant_id.strip()
 
     def rerank_results(
         self,
@@ -75,28 +84,45 @@ class RAGService:
 
         return ranked_results
 
-    def answer(self, question: str) -> dict[str, Any]:
+    def answer(
+        self,
+        question: str,
+        tenant_id: str,
+    ) -> dict[str, Any]:
 
         total_start = time.perf_counter()
+
+        tenant_id = self._validate_tenant_id(tenant_id)
 
         if not isinstance(question, str) or not question.strip():
             raise ValueError("Question must not be empty.")
 
         question = question.strip()
 
-        # ---------------------------------
-        # 1. Hybrid Search
-        # ---------------------------------
+        # 1. Tenant-scoped Hybrid Search.
         search_results = self.search_service.search(
-            question,
+            query=question,
+            tenant_id=tenant_id,
             limit=self.retrieval_limit,
         )
 
+        # 2. Validate tenant ownership BEFORE reranking.
+        for result in search_results:
+            metadata = result.get("metadata")
+
+            if not isinstance(metadata, dict):
+                raise RuntimeError(
+                    "Invalid document metadata detected in RAG results."
+                )
+
+            if metadata.get("tenant_id") != tenant_id:
+                raise RuntimeError(
+                    "Cross-tenant document detected in RAG results."
+                )
+
         search_metrics = dict(self.search_service.last_metrics)
 
-        # ---------------------------------
-        # 2. Cross-Encoder Reranking
-        # ---------------------------------
+        # 3. Cross-Encoder Reranking.
         reranking_start = time.perf_counter()
 
         ranked_results = self.rerank_results(
@@ -106,9 +132,7 @@ class RAGService:
 
         reranking_time = time.perf_counter() - reranking_start
 
-        # ---------------------------------
-        # 3. Relevance Filtering
-        # ---------------------------------
+        # 4. Relevance Filtering.
         filtering_start = time.perf_counter()
 
         relevant_results = [
@@ -121,18 +145,14 @@ class RAGService:
 
         filtering_time = time.perf_counter() - filtering_start
 
-        # ---------------------------------
-        # 4. Build Performance Metrics
-        # ---------------------------------
+        # 5. Performance Metrics.
         metrics = dict(search_metrics)
 
         metrics["reranking_ms"] = reranking_time * 1000
         metrics["relevance_filtering_ms"] = filtering_time * 1000
         metrics["llm_response_ms"] = 0.0
 
-        # ---------------------------------
-        # 5. Handle No-Answer Cases
-        # ---------------------------------
+        # 6. Handle No-Answer Cases.
         if not search_results or not selected_results:
 
             answer_text = (
@@ -147,6 +167,7 @@ class RAGService:
             self.last_metrics = metrics
 
             return {
+                "tenant_id": tenant_id,
                 "question": question,
                 "answer": answer_text,
                 "sources": [],
@@ -154,16 +175,14 @@ class RAGService:
                 "performance": dict(metrics),
             }
 
-        # ---------------------------------
-        # 6. Build Context and Sources
-        # ---------------------------------
+        # 7. Build Context and Sources.
         context_parts = []
         sources = []
 
         for index, result in enumerate(selected_results, start=1):
 
             text = result.get("text", "")
-            metadata = result.get("metadata", {})
+            metadata = result["metadata"]
 
             source = metadata.get("source", "unknown")
             page = metadata.get("page")
@@ -209,9 +228,7 @@ USER QUESTION:
 Answer using the supplied document context.
 """
 
-        # ---------------------------------
-        # 7. Groq LLM Generation
-        # ---------------------------------
+        # 8. Groq LLM Generation.
         llm_start = time.perf_counter()
 
         response = self.client.chat.completions.create(
@@ -227,9 +244,7 @@ Answer using the supplied document context.
 
         llm_time = time.perf_counter() - llm_start
 
-        # ---------------------------------
-        # 8. Final Performance Metrics
-        # ---------------------------------
+        # 9. Final Performance Metrics.
         metrics["llm_response_ms"] = llm_time * 1000
 
         metrics["total_rag_response_ms"] = (
@@ -239,6 +254,7 @@ Answer using the supplied document context.
         self.last_metrics = metrics
 
         return {
+            "tenant_id": tenant_id,
             "question": question,
             "answer": answer_text.strip(),
             "sources": sources,

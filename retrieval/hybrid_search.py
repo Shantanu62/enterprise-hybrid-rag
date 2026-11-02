@@ -1,93 +1,76 @@
 
-import re
 import time
 from typing import Any
 
-from rank_bm25 import BM25Plus
-
 from core.embeddings import EmbeddingService
 from core.vector_store import VectorStore
-
-
-def tokenize(text: str) -> list[str]:
-    """Convert text into lowercase word tokens."""
-    return re.findall(r"\b\w+\b", text.lower())
+from retrieval.bm25_index import BM25IndexManager
 
 
 class HybridSearchService:
-    """Combine vector search and BM25Plus using Reciprocal Rank Fusion."""
+    """Combine tenant-scoped BM25 and vector search using RRF."""
 
     def __init__(self) -> None:
         self.embedder = EmbeddingService()
         self.vector_store = VectorStore()
 
-        # Stores timing information for the latest search.
+        self.bm25_index_manager = BM25IndexManager(
+            self.vector_store
+        )
+
         self.last_metrics: dict[str, float] = {}
+
+    @staticmethod
+    def _validate_tenant_id(tenant_id: str) -> str:
+        if not isinstance(tenant_id, str) or not tenant_id.strip():
+            raise ValueError("tenant_id must not be empty.")
+
+        return tenant_id.strip()
 
     def search(
         self,
         query: str,
+        tenant_id: str,
         limit: int = 5,
         candidate_multiplier: int = 3,
         rrf_k: int = 60,
     ) -> list[dict[str, Any]]:
 
         total_start = time.perf_counter()
-
         self.last_metrics = {}
+
+        tenant_id = self._validate_tenant_id(tenant_id)
 
         if not isinstance(query, str) or not query.strip():
             raise ValueError("Search query must not be empty.")
 
         if limit <= 0 or candidate_multiplier <= 0 or rrf_k <= 0:
-            raise ValueError("Search limits and rrf_k must be greater than 0.")
+            raise ValueError(
+                "Search limits and rrf_k must be greater than 0."
+            )
 
         query = query.strip()
 
-        # ---------------------------------
-        # 1. Load documents from Qdrant
-        # ---------------------------------
-        scroll_start = time.perf_counter()
+        # 1. Load only this tenant's cached documents.
+        cache_start = time.perf_counter()
 
-        all_points = []
-        offset = None
+        documents = self.bm25_index_manager.get_documents(
+            tenant_id=tenant_id
+        )
 
-        while True:
-            points, next_offset = self.vector_store.client.scroll(
-                collection_name=self.vector_store.collection_name,
-                limit=100,
-                offset=offset,
-                with_payload=True,
-                with_vectors=False,
-            )
-
-            all_points.extend(points)
-
-            if next_offset is None:
-                break
-
-            offset = next_offset
-
-        scroll_time = time.perf_counter() - scroll_start
-
-        documents = {}
-
-        for point in all_points:
-            payload = point.payload or {}
-            text = payload.get("text", "")
-
-            if isinstance(text, str) and text.strip():
-                documents[str(point.id)] = {
-                    "text": text,
-                    "metadata": payload.get("metadata", {}),
-                    "vector_score": None,
-                    "bm25_score": 0.0,
-                    "rrf_score": 0.0,
-                }
+        cache_time = time.perf_counter() - cache_start
 
         if not documents:
+            bm25_metrics = self.bm25_index_manager.get_metrics(
+                tenant_id
+            )
+
             self.last_metrics = {
-                "qdrant_scroll_ms": scroll_time * 1000,
+                "bm25_cache_load_ms": cache_time * 1000,
+                "bm25_rebuild_ms": bm25_metrics.get(
+                    "bm25_rebuild_ms", 0.0
+                ),
+                "bm25_document_count": 0.0,
                 "total_hybrid_search_ms": (
                     time.perf_counter() - total_start
                 ) * 1000,
@@ -95,88 +78,52 @@ class HybridSearchService:
 
             return []
 
-        # ---------------------------------
-        # 2. Query Embedding
-        # ---------------------------------
+        # 2. Generate query embedding.
         embedding_start = time.perf_counter()
 
         query_vector = self.embedder.embed_query(query)
 
         embedding_time = time.perf_counter() - embedding_start
 
-        # ---------------------------------
-        # 3. Vector Search
-        # ---------------------------------
+        # 3. Tenant-filtered Qdrant vector search.
         vector_start = time.perf_counter()
 
-        vector_response = self.vector_store.client.query_points(
-            collection_name=self.vector_store.collection_name,
-            query=query_vector,
-            limit=min(
-                len(documents),
-                limit * candidate_multiplier,
-            ),
-            with_payload=True,
+        vector_results = self.vector_store.search(
+            query_vector=query_vector,
+            tenant_id=tenant_id,
+            limit=limit * candidate_multiplier,
         )
 
         vector_rankings = []
 
-        for point in vector_response.points:
-            point_id = str(point.id)
+        for result in vector_results:
+            point_id = result["id"]
 
             if point_id in documents:
                 vector_rankings.append(point_id)
-                documents[point_id]["vector_score"] = point.score
+                documents[point_id]["vector_score"] = result["score"]
 
         vector_time = time.perf_counter() - vector_start
 
-        # ---------------------------------
-        # 4. BM25Plus Keyword Search
-        # ---------------------------------
+        # 4. Search only this tenant's BM25 index.
         bm25_start = time.perf_counter()
 
-        corpus_ids = list(documents.keys())
+        bm25_results = self.bm25_index_manager.search(
+            query=query,
+            tenant_id=tenant_id,
+            limit=len(documents),
+        )
 
-        tokenized_corpus = [
-            tokenize(documents[point_id]["text"])
-            for point_id in corpus_ids
-        ]
-
-        query_tokens = tokenize(query)
         bm25_rankings = []
 
-        if query_tokens and any(tokenized_corpus):
-            bm25 = BM25Plus(tokenized_corpus)
-            scores = bm25.get_scores(query_tokens)
-
-            query_terms = set(query_tokens)
-
-            matching_indices = [
-                index
-                for index, tokens in enumerate(tokenized_corpus)
-                if query_terms.intersection(tokens)
-            ]
-
-            matching_indices.sort(
-                key=lambda index: scores[index],
-                reverse=True,
-            )
-
-            bm25_rankings = [
-                corpus_ids[index]
-                for index in matching_indices
-            ]
-
-            for index in matching_indices:
-                documents[corpus_ids[index]]["bm25_score"] = float(
-                    scores[index]
-                )
+        for point_id, score in bm25_results:
+            if point_id in documents:
+                bm25_rankings.append(point_id)
+                documents[point_id]["bm25_score"] = score
 
         bm25_time = time.perf_counter() - bm25_start
 
-        # ---------------------------------
-        # 5. Reciprocal Rank Fusion
-        # ---------------------------------
+        # 5. Reciprocal Rank Fusion.
         rrf_start = time.perf_counter()
 
         for rankings in (vector_rankings, bm25_rankings):
@@ -196,13 +143,21 @@ class HybridSearchService:
 
         rrf_time = time.perf_counter() - rrf_start
 
-        # ---------------------------------
-        # 6. Save Performance Metrics
-        # ---------------------------------
+        # 6. Tenant-specific performance metrics.
         total_time = time.perf_counter() - total_start
 
+        bm25_metrics = self.bm25_index_manager.get_metrics(
+            tenant_id
+        )
+
         self.last_metrics = {
-            "qdrant_scroll_ms": scroll_time * 1000,
+            "bm25_cache_load_ms": cache_time * 1000,
+            "bm25_rebuild_ms": bm25_metrics.get(
+                "bm25_rebuild_ms", 0.0
+            ),
+            "bm25_document_count": bm25_metrics.get(
+                "bm25_document_count", 0.0
+            ),
             "query_embedding_ms": embedding_time * 1000,
             "vector_search_ms": vector_time * 1000,
             "bm25_search_ms": bm25_time * 1000,
@@ -213,4 +168,5 @@ class HybridSearchService:
         return final_results
 
     def close(self) -> None:
+        """Close the Qdrant client connection."""
         self.vector_store.close()

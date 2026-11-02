@@ -20,8 +20,6 @@ API_BASE_URL = os.getenv(
     "http://127.0.0.1:8000",
 ).rstrip("/")
 
-DEFAULT_ORGANIZATION_ID = "61a95709-2c5b-4d6e-aed3-875d886b1450"
-
 
 # ---------------------------------
 # Session State
@@ -30,7 +28,8 @@ DEFAULT_ORGANIZATION_ID = "61a95709-2c5b-4d6e-aed3-875d886b1450"
 defaults = {
     "access_token": None,
     "user_email": None,
-    "organization_id": DEFAULT_ORGANIZATION_ID,
+    "organization_id": None,
+    "organizations": [],
     "messages": [],
 }
 
@@ -45,7 +44,9 @@ for key, value in defaults.items():
 
 def api_headers():
     return {
-        "Authorization": f"Bearer {st.session_state.access_token}"
+        "Authorization": (
+            f"Bearer {st.session_state.access_token}"
+        )
     }
 
 
@@ -60,6 +61,8 @@ def api_error_message(response):
 def clear_session():
     st.session_state.access_token = None
     st.session_state.user_email = None
+    st.session_state.organization_id = None
+    st.session_state.organizations = []
     st.session_state.messages = []
 
 
@@ -100,10 +103,14 @@ if not st.session_state.access_token:
     if login_button:
 
         if not email.strip() or not password:
-            st.warning("Please enter your email and password.")
+            st.warning(
+                "Please enter your email and password."
+            )
 
         else:
+
             try:
+
                 with st.spinner("Authenticating..."):
 
                     response = httpx.post(
@@ -118,25 +125,57 @@ if not st.session_state.access_token:
                 if response.status_code == 200:
 
                     login_data = response.json()
+
                     token = login_data.get("access_token")
 
+                    organizations = login_data.get(
+                        "organizations",
+                        [],
+                    )
+
                     if not token:
+
                         st.error(
-                            "Login response did not contain an access token."
+                            "Login response did not contain "
+                            "an access token."
                         )
+
+                    elif not organizations:
+
+                        st.error(
+                            "No active organization found "
+                            "for this account."
+                        )
+
                     else:
+
                         st.session_state.access_token = token
-                        st.session_state.user_email = email.strip()
+
+                        st.session_state.user_email = (
+                            email.strip()
+                        )
+
+                        st.session_state.organizations = (
+                            organizations
+                        )
+
+                        st.session_state.organization_id = (
+                            organizations[0]["id"]
+                        )
+
                         st.session_state.messages = []
 
                         st.rerun()
 
                 else:
+
                     st.error(
-                        f"Login failed: {api_error_message(response)}"
+                        f"Login failed: "
+                        f"{api_error_message(response)}"
                     )
 
             except httpx.RequestError:
+
                 st.error(
                     "Could not connect to FastAPI. "
                     "Make sure the backend server is running."
@@ -164,29 +203,63 @@ if st.sidebar.button("Logout"):
 
 
 # ---------------------------------
-# Organization
+# Organization Selection
 # ---------------------------------
 
 st.sidebar.divider()
+
 st.sidebar.subheader("Organization")
 
-organization_id = st.sidebar.text_input(
-    "Organization ID",
-    value=st.session_state.organization_id,
+organizations = st.session_state.organizations
+
+if not organizations:
+
+    st.error(
+        "No organization is available. "
+        "Please log in again."
+    )
+
+    clear_session()
+    st.stop()
+
+
+organization_options = {
+    (
+        f"{org['name']} ({org['role']})"
+    ): org["id"]
+    for org in organizations
+}
+
+option_labels = list(organization_options.keys())
+
+current_org_id = st.session_state.organization_id
+
+current_index = next(
+    (
+        index
+        for index, org_id in enumerate(
+            organization_options.values()
+        )
+        if org_id == current_org_id
+    ),
+    0,
 )
 
-if st.sidebar.button("Apply Organization"):
+selected_label = st.sidebar.selectbox(
+    "Select Organization",
+    options=option_labels,
+    index=current_index,
+)
 
-    if organization_id.strip():
+selected_org_id = organization_options[selected_label]
 
-        st.session_state.organization_id = organization_id.strip()
-        st.session_state.messages = []
+if selected_org_id != st.session_state.organization_id:
 
-        st.sidebar.success("Organization updated.")
-        st.rerun()
+    st.session_state.organization_id = selected_org_id
 
-    else:
-        st.sidebar.error("Organization ID cannot be empty.")
+    st.session_state.messages = []
+
+    st.rerun()
 
 
 # ---------------------------------
@@ -194,6 +267,7 @@ if st.sidebar.button("Apply Organization"):
 # ---------------------------------
 
 st.sidebar.divider()
+
 st.sidebar.subheader("Document Management")
 
 uploaded_files = st.sidebar.file_uploader(
@@ -219,6 +293,7 @@ if uploaded_files:
         for uploaded_file in uploaded_files:
 
             try:
+
                 with st.spinner(
                     f"Uploading {uploaded_file.name}..."
                 ):
@@ -245,9 +320,8 @@ if uploaded_files:
 
                     result = response.json()
 
-                    # Correct response structure:
-                    # result["document"]["status"]
                     document = result.get("document", {})
+
                     ingestion = result.get("ingestion", {})
 
                     if document.get("status") == "completed":
@@ -255,7 +329,8 @@ if uploaded_files:
                         successful += 1
 
                         st.sidebar.success(
-                            f"{uploaded_file.name} uploaded successfully."
+                            f"{uploaded_file.name} "
+                            "uploaded successfully."
                         )
 
                         st.sidebar.write(
@@ -279,12 +354,13 @@ if uploaded_files:
 
                         st.sidebar.error(
                             f"{uploaded_file.name}: "
-                            "Upload response did not confirm completion."
+                            "Upload response did not "
+                            "confirm completion."
                         )
 
                 elif response.status_code == 401:
 
-                    st.session_state.access_token = None
+                    clear_session()
 
                     st.error(
                         "Session expired. Please login again."
@@ -306,17 +382,20 @@ if uploaded_files:
                 failed += 1
 
                 st.sidebar.error(
-                    f"{uploaded_file.name}: Backend connection failed."
+                    f"{uploaded_file.name}: "
+                    "Backend connection failed."
                 )
 
         st.sidebar.divider()
 
         if successful:
+
             st.sidebar.success(
                 f"Successfully processed: {successful}"
             )
 
         if failed:
+
             st.sidebar.warning(
                 f"Failed uploads: {failed}"
             )
@@ -334,11 +413,14 @@ st.sidebar.caption(
 st.subheader("Ask Your Documents")
 
 st.caption(
-    "Ask questions about documents belonging to your organization."
+    "Ask questions about documents belonging "
+    "to your organization."
 )
 
 
-# Display previous messages
+# ---------------------------------
+# Display Previous Messages
+# ---------------------------------
 
 for message in st.session_state.messages:
 
@@ -377,11 +459,15 @@ if question:
 
     if not user_question:
 
-        st.warning("Please enter a valid question.")
+        st.warning(
+            "Please enter a valid question."
+        )
 
     elif len(user_question) > 4000:
 
-        st.warning("Question cannot exceed 4000 characters.")
+        st.warning(
+            "Question cannot exceed 4000 characters."
+        )
 
     else:
 
@@ -421,8 +507,14 @@ if question:
                             "answer",
                             "No answer returned.",
                         ),
-                        "sources": result.get("sources", []),
-                        "performance": result.get("performance", {}),
+                        "sources": result.get(
+                            "sources",
+                            [],
+                        ),
+                        "performance": result.get(
+                            "performance",
+                            {},
+                        ),
                     }
                 )
 
@@ -430,7 +522,6 @@ if question:
 
             elif response.status_code == 401:
 
-                st.session_state.messages.pop()
                 clear_session()
 
                 st.error(
@@ -444,7 +535,8 @@ if question:
                 st.session_state.messages.pop()
 
                 st.error(
-                    "You do not have permission to access this organization."
+                    "You do not have permission "
+                    "to access this organization."
                 )
 
             else:
@@ -452,7 +544,8 @@ if question:
                 st.session_state.messages.pop()
 
                 st.error(
-                    f"Request failed: {api_error_message(response)}"
+                    f"Request failed: "
+                    f"{api_error_message(response)}"
                 )
 
         except httpx.RequestError:

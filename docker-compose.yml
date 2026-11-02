@@ -1,7 +1,7 @@
-﻿
+ï»¿
 services:
   backend:
-    image: enterprise-hybrid-rag-nonroot:latest
+    image: enterprise-hybrid-rag-nonroot:cpu-test
     container_name: enterprise-rag-backend
     command: uvicorn backend.main:app --host 0.0.0.0 --port 8000
     env_file:
@@ -23,7 +23,7 @@ services:
       start_period: 20s
 
   frontend:
-    image: enterprise-hybrid-rag-nonroot:latest
+    image: enterprise-hybrid-rag-nonroot:cpu-test
     container_name: enterprise-rag-frontend
     command: streamlit run app.py --server.address 0.0.0.0 --server.port 8501
     env_file:
@@ -46,4 +46,3 @@ services:
       retries: 3
       start_period: 20s
     restart: unless-stopped
-

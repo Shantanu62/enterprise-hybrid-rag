@@ -39,6 +39,7 @@ def get_database_config() -> dict[str, str | int]:
         "dbname": os.environ["DB_NAME"].strip(),
         "user": os.environ["DB_USER"].strip(),
         "password": os.environ["DB_PASSWORD"],
+        "sslmode": "require",
     }
 
 

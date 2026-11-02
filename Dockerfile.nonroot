@@ -1,4 +1,4 @@
-﻿FROM enterprise-hybrid-rag-backend:latest
+﻿FROM enterprise-hybrid-rag-backend:cpu-test
 RUN groupadd --gid 10001 appuser \
     && useradd --no-log-init --uid 10001 --gid 10001 \
        --create-home --home-dir /home/appuser \

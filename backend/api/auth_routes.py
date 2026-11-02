@@ -9,6 +9,7 @@ from backend.auth.service import (
     authenticate_user,
     create_user_access_token,
 )
+from database.connection import get_db_connection
 
 
 router = APIRouter(
@@ -27,6 +28,7 @@ class LoginResponse(BaseModel):
     token_type: str
     expires_in_minutes: int
     user: dict[str, Any]
+    organizations: list[dict[str, Any]]
 
 
 @router.post(
@@ -35,7 +37,7 @@ class LoginResponse(BaseModel):
 )
 def login(request: LoginRequest):
     """
-    Authenticate a user and return a JWT access token.
+    Authenticate user and return their active organizations.
     """
 
     try:
@@ -43,6 +45,38 @@ def login(request: LoginRequest):
             email=str(request.email),
             password=request.password,
         )
+
+        with get_db_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    o.id,
+                    o.name,
+                    om.role
+                FROM organization_members om
+                JOIN organizations o
+                    ON o.id = om.organization_id
+                WHERE
+                    om.user_id = %s
+                    AND o.status = 'active'
+                ORDER BY o.name;
+                """,
+                (user["id"],),
+            ).fetchall()
+
+        organizations = [
+            {
+                "id": str(row[0]),
+                "name": row[1],
+                "role": row[2],
+            }
+            for row in rows
+        ]
+
+        if not organizations:
+            raise AuthenticationError(
+                "No active organization membership found."
+            )
 
         access_token = create_user_access_token(
             user_id=user["id"],
@@ -53,11 +87,12 @@ def login(request: LoginRequest):
             "token_type": "bearer",
             "expires_in_minutes": 30,
             "user": user,
+            "organizations": organizations,
         }
 
     except AuthenticationError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password.",
+            detail="Authentication failed or no active organization is assigned.",
             headers={"WWW-Authenticate": "Bearer"},
         )

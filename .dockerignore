@@ -49,3 +49,5 @@ inspect_password_column.py
 
 Dockerfile.backup/
 Dockerfile.backup
+
+docker-uploads-backup/

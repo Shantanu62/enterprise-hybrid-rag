@@ -10,16 +10,14 @@ from fastapi import (
     Depends,
     File,
     HTTPException,
+    Response,
     UploadFile,
     status,
 )
 from pydantic import BaseModel, Field
 
 from backend.auth.dependencies import require_org_permission
-from database.document_service import (
-    DocumentService,
-    DocumentServiceError,
-)
+from database.document_service import DocumentService
 from ingestion.pipeline import IngestionPipeline
 from retrieval.rag_service import RAGService
 
@@ -98,15 +96,13 @@ def check_admin_access(
 )
 async def upload_document(
     organization_id: UUID,
+    response: Response,
     file: UploadFile = File(...),
     access: dict[str, Any] = Depends(
         require_org_permission("documents:upload")
     ),
 ):
-    """
-    Upload and ingest a document for an authorized organization.
-    Organization and uploader IDs come from verified authentication.
-    """
+    """Upload and ingest a document for an authorized organization."""
 
     organization_id = access["organization_id"]
     uploaded_by = access["user"]["id"]
@@ -130,21 +126,21 @@ async def upload_document(
 
     file_type = ALLOWED_EXTENSIONS[extension]
 
-    organization_directory = UPLOAD_ROOT / organization_id
+    organization_directory = UPLOAD_ROOT / str(organization_id)
     storage_filename = f"{uuid4().hex}{extension}"
     storage_path = organization_directory / storage_filename
 
     relative_storage_path = (
         Path("data")
         / "uploads"
-        / organization_id
+        / str(organization_id)
         / storage_filename
     )
 
     file_size = 0
     content_hasher = hashlib.sha256()
-    document_service = DocumentService()
 
+    document_service = DocumentService()
     pipeline = None
     registration = None
 
@@ -189,21 +185,40 @@ async def upload_document(
             content_hash=content_hash,
         )
 
+        if registration.get("duplicate"):
+            storage_path.unlink(missing_ok=True)
+            response.status_code = status.HTTP_200_OK
+
+            return {
+                "success": True,
+                "duplicate": True,
+                "message": (
+                    "This document with identical content has already "
+                    "been uploaded."
+                ),
+                "document": {
+                    "document_id": registration["document_id"],
+                    "version_id": registration["version_id"],
+                    "organization_id": registration["organization_id"],
+                    "source_name": registration["source_name"],
+                    "file_type": registration["file_type"],
+                    "status": registration["document_status"],
+                    "version_number": registration["version_number"],
+                    "chunks_stored": registration["chunks_stored"],
+                },
+            }
+
         pipeline = IngestionPipeline()
 
         ingestion_result = pipeline.ingest_file(
             file_path=str(storage_path),
-            tenant_id=organization_id,
-            document_id=registration["document_id"],
-            version_id=registration["version_id"],
+            tenant_id=str(organization_id),
+            document_id=str(registration["document_id"]),
+            version_id=str(registration["version_id"]),
+            source_name=source_name,
         )
 
-        ingestion_status = ingestion_result.get("status")
-
-        if ingestion_status not in {
-            "success",
-            "success_with_cleanup_warning",
-        }:
+        if ingestion_result.get("status") != "success":
             raise RuntimeError(
                 "Document ingestion did not store any chunks."
             )
@@ -215,6 +230,7 @@ async def upload_document(
                 "Ingestion returned an invalid stored chunk count."
             )
 
+        # First confirm the new version in PostgreSQL.
         document_service.update_ingestion_status(
             organization_id=organization_id,
             document_id=registration["document_id"],
@@ -224,27 +240,58 @@ async def upload_document(
             chunk_count=chunk_count,
         )
 
+        # Only after DB completion, remove the previous Qdrant versions.
+        cleanup_result = pipeline.cleanup_previous_versions(
+            tenant_id=str(organization_id),
+            document_id=str(registration["document_id"]),
+            version_ids=ingestion_result.get(
+                "previous_version_ids", []
+            ),
+        )
+
+        cleanup_warning = not cleanup_result["success"]
+
         return {
             "success": True,
-            "message": "Document uploaded and ingested successfully.",
+            "duplicate": False,
+            "message": (
+                "Document uploaded and ingested successfully."
+                if not cleanup_warning
+                else (
+                    "Document ingested successfully, but some previous "
+                    "version points could not be deleted."
+                )
+            ),
             "document": {
                 "document_id": registration["document_id"],
                 "version_id": registration["version_id"],
                 "job_id": registration["job_id"],
-                "organization_id": organization_id,
+                "organization_id": str(organization_id),
                 "source_name": source_name,
                 "file_type": file_type,
                 "file_size_bytes": file_size,
                 "content_hash": content_hash,
                 "status": "completed",
+                "version_number": registration["version_number"],
                 "chunks_stored": chunk_count,
             },
             "ingestion": {
-                "status": ingestion_status,
-                "message": ingestion_result.get("message"),
-                "previous_versions_deleted": ingestion_result.get(
-                    "previous_versions_deleted", 0
+                "status": (
+                    "success_with_cleanup_warning"
+                    if cleanup_warning
+                    else "success"
                 ),
+                "message": ingestion_result.get("message"),
+                "previous_versions_found": ingestion_result.get(
+                    "previous_versions_found", 0
+                ),
+                "previous_versions_deleted": cleanup_result[
+                    "previous_versions_deleted"
+                ],
+                "previous_versions_remaining": cleanup_result[
+                    "previous_versions_remaining"
+                ],
+                "cleanup_errors": cleanup_result["cleanup_errors"],
             },
         }
 
@@ -255,19 +302,25 @@ async def upload_document(
     except Exception as exc:
         logger.exception("Document upload or ingestion failed.")
 
+        # If DB completion did not happen, remove only the new version.
+        # Previous Qdrant versions have not yet been deleted.
         if registration is not None and pipeline is not None:
             try:
                 pipeline.vector_store.delete_version(
-                    tenant_id=organization_id,
-                    document_id=registration["document_id"],
-                    version_id=registration["version_id"],
+                    tenant_id=str(organization_id),
+                    document_id=str(registration["document_id"]),
+                    version_id=str(registration["version_id"]),
                 )
             except Exception:
                 logger.exception(
                     "Could not clean up partially stored Qdrant points."
                 )
 
-        if registration is not None:
+        if (
+            registration is not None
+            and registration.get("job_id")
+            and registration.get("version_id")
+        ):
             try:
                 document_service.update_ingestion_status(
                     organization_id=organization_id,
@@ -312,12 +365,9 @@ def ask_organization_documents(
         require_org_permission("search:execute")
     ),
 ):
-    """
-    Answer a question using only the authenticated organization's documents.
-    """
+    """Answer a question using the authenticated organization's documents."""
 
     verified_organization_id = access["organization_id"]
-
     rag_service = None
 
     try:

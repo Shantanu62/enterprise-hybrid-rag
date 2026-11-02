@@ -10,7 +10,7 @@ from retrieval.bm25_index import BM25IndexManager
 
 
 class IngestionPipeline:
-    """Tenant-aware document ingestion and safe version replacement."""
+    """Tenant-aware document ingestion with safe version replacement."""
 
     def __init__(
         self,
@@ -27,7 +27,6 @@ class IngestionPipeline:
     ) -> str:
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"{field_name} must not be empty.")
-
         return value.strip()
 
     def ingest_file(
@@ -36,27 +35,21 @@ class IngestionPipeline:
         tenant_id: str,
         document_id: str,
         version_id: str,
+        source_name: str | None = None,
     ) -> dict[str, Any]:
-        """
-        Ingest a document version for a specific tenant.
-
-        The caller must supply verified tenant, document and version IDs.
-        """
 
         tenant_id = self._validate_identifier(tenant_id, "tenant_id")
-        document_id = self._validate_identifier(
-            document_id, "document_id"
-        )
-        version_id = self._validate_identifier(
-            version_id, "version_id"
-        )
+        document_id = self._validate_identifier(document_id, "document_id")
+        version_id = self._validate_identifier(version_id, "version_id")
 
         path = Path(file_path)
 
         if not path.exists() or not path.is_file():
-            raise FileNotFoundError(
-                f"Document not found: {path}"
-            )
+            raise FileNotFoundError(f"Document not found: {path}")
+
+        original_source = (source_name or path.name).strip()
+        if not original_source:
+            raise ValueError("Source name must not be empty.")
 
         documents = load_document(str(path))
 
@@ -69,14 +62,15 @@ class IngestionPipeline:
         if not chunks:
             return {
                 "status": "skipped",
-                "file": path.name,
+                "file": original_source,
                 "tenant_id": tenant_id,
                 "document_id": document_id,
                 "version_id": version_id,
                 "documents_loaded": len(documents),
                 "chunks_created": 0,
                 "chunks_stored": 0,
-                "old_chunks_deleted": 0,
+                "previous_version_ids": [],
+                "previous_versions_found": 0,
                 "message": "No text chunks were generated.",
             }
 
@@ -86,16 +80,15 @@ class IngestionPipeline:
             enriched_chunk = chunk.copy()
             metadata = enriched_chunk.get("metadata", {}).copy()
 
-            metadata["source"] = path.name
-            enriched_chunk["metadata"] = metadata
+            metadata["source"] = original_source
 
+            enriched_chunk["metadata"] = metadata
             enriched_chunks.append(enriched_chunk)
 
         vectors = self.embedder.embed_texts(
             [chunk["text"] for chunk in enriched_chunks]
         )
 
-        # Identify previous versions before inserting the new version.
         previous_version_ids = (
             self.vector_store.get_previous_version_ids(
                 tenant_id=tenant_id,
@@ -104,7 +97,6 @@ class IngestionPipeline:
             )
         )
 
-        # Store the new version before removing previous versions.
         stored_count = self.vector_store.add_documents(
             records=enriched_chunks,
             vectors=vectors,
@@ -113,26 +105,56 @@ class IngestionPipeline:
             version_id=version_id,
         )
 
-        # A zero count means no new points were stored.
         if stored_count == 0:
             return {
                 "status": "skipped",
-                "file": path.name,
+                "file": original_source,
                 "tenant_id": tenant_id,
                 "document_id": document_id,
                 "version_id": version_id,
                 "documents_loaded": len(documents),
                 "chunks_created": len(enriched_chunks),
                 "chunks_stored": 0,
-                "old_chunks_deleted": 0,
-                "message": "No chunks were stored. Previous versions were preserved.",
+                "previous_version_ids": [],
+                "previous_versions_found": 0,
+                "message": (
+                    "No chunks were stored. Previous versions were preserved."
+                ),
             }
+
+        if self.bm25_index_manager is not None:
+            self.bm25_index_manager.invalidate(tenant_id)
+
+        return {
+            "status": "success",
+            "file": original_source,
+            "tenant_id": tenant_id,
+            "document_id": document_id,
+            "version_id": version_id,
+            "documents_loaded": len(documents),
+            "chunks_created": len(enriched_chunks),
+            "chunks_stored": stored_count,
+            "previous_version_ids": previous_version_ids,
+            "previous_versions_found": len(previous_version_ids),
+            "previous_versions_deleted": 0,
+            "message": (
+                "New version stored successfully. Previous versions "
+                "are preserved until database completion is confirmed."
+            ),
+        }
+
+    def cleanup_previous_versions(
+        self,
+        tenant_id: str,
+        document_id: str,
+        version_ids: list[str],
+    ) -> dict[str, Any]:
+        """Delete old versions only after the new version is completed."""
 
         deleted_version_ids = []
         cleanup_errors = []
 
-        # Delete only the previous versions, never the current version.
-        for old_version_id in previous_version_ids:
+        for old_version_id in version_ids:
             try:
                 self.vector_store.delete_version(
                     tenant_id=tenant_id,
@@ -142,46 +164,21 @@ class IngestionPipeline:
                 deleted_version_ids.append(old_version_id)
 
             except Exception as exc:
-                cleanup_errors.append(type(exc).__name__)
+                cleanup_errors.append({
+                    "version_id": old_version_id,
+                    "error": type(exc).__name__,
+                })
 
         if self.bm25_index_manager is not None:
             self.bm25_index_manager.invalidate(tenant_id)
 
-        if cleanup_errors:
-            return {
-                "status": "success_with_cleanup_warning",
-                "file": path.name,
-                "tenant_id": tenant_id,
-                "document_id": document_id,
-                "version_id": version_id,
-                "documents_loaded": len(documents),
-                "chunks_created": len(enriched_chunks),
-                "chunks_stored": stored_count,
-                "previous_versions_found": len(previous_version_ids),
-                "previous_versions_deleted": len(deleted_version_ids),
-                "old_chunks_deleted": None,
-                "cleanup_errors": cleanup_errors,
-                "message": (
-                    "New version stored successfully, but some previous "
-                    "versions could not be deleted."
-                ),
-            }
-
         return {
-            "status": "success",
-            "file": path.name,
-            "tenant_id": tenant_id,
-            "document_id": document_id,
-            "version_id": version_id,
-            "documents_loaded": len(documents),
-            "chunks_created": len(enriched_chunks),
-            "chunks_stored": stored_count,
-            "previous_versions_found": len(previous_version_ids),
             "previous_versions_deleted": len(deleted_version_ids),
-            "message": (
-                "Tenant-scoped document ingestion and version replacement "
-                "completed successfully."
+            "previous_versions_remaining": (
+                len(version_ids) - len(deleted_version_ids)
             ),
+            "cleanup_errors": cleanup_errors,
+            "success": not cleanup_errors,
         }
 
     def close(self) -> None:

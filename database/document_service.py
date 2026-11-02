@@ -53,7 +53,17 @@ class DocumentService:
         try:
             with get_db_connection() as conn:
 
-                # Verify that the uploader belongs to this organization.
+                # Serialize document registrations within this organization.
+                conn.execute(
+                    """
+                    SELECT id
+                    FROM organizations
+                    WHERE id = %s
+                    FOR UPDATE;
+                    """,
+                    (organization_uuid,),
+                )
+
                 membership = conn.execute(
                     """
                     SELECT 1
@@ -73,24 +83,108 @@ class DocumentService:
                         "Uploader is not an active organization member."
                     )
 
-                document = conn.execute(
+                existing = conn.execute(
                     """
-                    INSERT INTO documents (
-                        id, organization_id, uploaded_by,
-                        source_name, file_type, status
-                    )
-                    VALUES (%s, %s, %s, %s, %s, 'processing')
-                    RETURNING id, organization_id, source_name,
-                              file_type, status, created_at;
+                    SELECT id, source_name, file_type, status
+                    FROM documents
+                    WHERE organization_id = %s
+                      AND source_name = %s
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    FOR UPDATE;
                     """,
-                    (
-                        document_id,
-                        organization_uuid,
-                        user_uuid,
-                        source_name,
-                        file_type,
-                    ),
+                    (organization_uuid, source_name),
                 ).fetchone()
+
+                if existing is not None:
+                    document_id = existing[0]
+
+                    # Prevent duplicate processing of identical content.
+                    if content_hash:
+                        duplicate = conn.execute(
+                            """
+                            SELECT dv.id, dv.version_number,
+                                   dv.status, dv.chunk_count
+                            FROM document_versions dv
+                            WHERE dv.organization_id = %s
+                              AND dv.document_id = %s
+                              AND dv.content_hash = %s
+                              AND dv.status = 'completed'
+                            ORDER BY dv.version_number DESC
+                            LIMIT 1;
+                            """,
+                            (
+                                organization_uuid,
+                                document_id,
+                                content_hash,
+                            ),
+                        ).fetchone()
+
+                        if duplicate is not None:
+                            return {
+                                "duplicate": True,
+                                "document_id": str(document_id),
+                                "organization_id": str(organization_uuid),
+                                "source_name": existing[1],
+                                "file_type": existing[2],
+                                "document_status": existing[3],
+                                "version_id": str(duplicate[0]),
+                                "version_number": duplicate[1],
+                                "version_status": duplicate[2],
+                                "chunks_stored": duplicate[3],
+                            }
+
+                    version_number_row = conn.execute(
+                        """
+                        SELECT COALESCE(MAX(version_number), 0) + 1
+                        FROM document_versions
+                        WHERE organization_id = %s
+                          AND document_id = %s;
+                        """,
+                        (organization_uuid, document_id),
+                    ).fetchone()
+
+                    version_number = version_number_row[0]
+
+                    conn.execute(
+                        """
+                        UPDATE documents
+                        SET uploaded_by = %s,
+                            file_type = %s,
+                            updated_at = NOW()
+                        WHERE id = %s
+                          AND organization_id = %s;
+                        """,
+                        (
+                            user_uuid,
+                            file_type,
+                            document_id,
+                            organization_uuid,
+                        ),
+                    )
+
+                else:
+                    version_number = 1
+
+                    document = conn.execute(
+                        """
+                        INSERT INTO documents (
+                            id, organization_id, uploaded_by,
+                            source_name, file_type, status
+                        )
+                        VALUES (%s, %s, %s, %s, %s, 'processing')
+                        RETURNING id;
+                        """,
+                        (
+                            document_id,
+                            organization_uuid,
+                            user_uuid,
+                            source_name,
+                            file_type,
+                        ),
+                    ).fetchone()
+
+                    document_id = document[0]
 
                 version = conn.execute(
                     """
@@ -99,13 +193,14 @@ class DocumentService:
                         version_number, storage_path, content_hash,
                         chunk_count, status
                     )
-                    VALUES (%s, %s, %s, 1, %s, %s, 0, 'processing')
+                    VALUES (%s, %s, %s, %s, %s, %s, 0, 'processing')
                     RETURNING id, version_number, status;
                     """,
                     (
                         version_id,
                         organization_uuid,
                         document_id,
+                        version_number,
                         storage_path,
                         content_hash,
                     ),
@@ -128,13 +223,25 @@ class DocumentService:
                     ),
                 ).fetchone()
 
+                # Mark the logical document as processing.
+                conn.execute(
+                    """
+                    UPDATE documents
+                    SET status = 'processing',
+                        updated_at = NOW()
+                    WHERE id = %s
+                      AND organization_id = %s;
+                    """,
+                    (document_id, organization_uuid),
+                )
+
             return {
-                "document_id": str(document[0]),
-                "organization_id": str(document[1]),
-                "source_name": document[2],
-                "file_type": document[3],
-                "document_status": document[4],
-                "created_at": document[5],
+                "duplicate": False,
+                "document_id": str(document_id),
+                "organization_id": str(organization_uuid),
+                "source_name": source_name,
+                "file_type": file_type,
+                "document_status": "processing",
                 "version_id": str(version[0]),
                 "version_number": version[1],
                 "version_status": version[2],
@@ -228,6 +335,32 @@ class DocumentService:
                 ),
             )
 
+            # Keep the logical document active if another completed
+            # version exists after this ingestion attempt fails.
+            if status == "completed":
+                document_status = "active"
+            else:
+                previous_completed = conn.execute(
+                    """
+                    SELECT 1
+                    FROM document_versions
+                    WHERE organization_id = %s
+                      AND document_id = %s
+                      AND status = 'completed'
+                      AND id <> %s
+                    LIMIT 1;
+                    """,
+                    (
+                        organization_uuid,
+                        document_uuid,
+                        version_uuid,
+                    ),
+                ).fetchone()
+
+                document_status = (
+                    "active" if previous_completed else "failed"
+                )
+
             conn.execute(
                 """
                 UPDATE documents
@@ -237,7 +370,7 @@ class DocumentService:
                   AND organization_id = %s;
                 """,
                 (
-                    "active" if status == "completed" else "failed",
+                    document_status,
                     document_uuid,
                     organization_uuid,
                 ),

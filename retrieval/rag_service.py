@@ -5,11 +5,19 @@ from typing import Any
 
 from dotenv import load_dotenv
 from groq import Groq
-from sentence_transformers import CrossEncoder
 
 from retrieval.hybrid_search import HybridSearchService
 
 load_dotenv()
+
+
+def env_enabled(name: str, default: bool = True) -> bool:
+    value = os.getenv(name)
+
+    if value is None:
+        return default
+
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 class RAGService:
@@ -42,8 +50,19 @@ class RAGService:
         self.final_source_limit = final_source_limit
         self.reranker_score_threshold = reranker_score_threshold
 
+        self.enable_reranker = env_enabled(
+            "ENABLE_RERANKER",
+            default=True,
+        )
+
+        self.reranker = None
+
+        if self.enable_reranker:
+            from sentence_transformers import CrossEncoder
+
+            self.reranker = CrossEncoder(reranker_model)
+
         self.search_service = HybridSearchService()
-        self.reranker = CrossEncoder(reranker_model)
 
         self.last_metrics: dict[str, float] = {}
 
@@ -62,6 +81,9 @@ class RAGService:
 
         if not results:
             return []
+
+        if not self.enable_reranker:
+            return results
 
         pairs = [
             (question, result.get("text", ""))
@@ -122,7 +144,7 @@ class RAGService:
 
         search_metrics = dict(self.search_service.last_metrics)
 
-        # 3. Cross-Encoder Reranking.
+        # 3. Optional Cross-Encoder Reranking.
         reranking_start = time.perf_counter()
 
         ranked_results = self.rerank_results(
@@ -135,11 +157,16 @@ class RAGService:
         # 4. Relevance Filtering.
         filtering_start = time.perf_counter()
 
-        relevant_results = [
-            result
-            for result in ranked_results
-            if result["reranker_score"] > self.reranker_score_threshold
-        ]
+        if self.enable_reranker:
+            relevant_results = [
+                result
+                for result in ranked_results
+                if result["reranker_score"]
+                > self.reranker_score_threshold
+            ]
+        else:
+            # Hybrid Search already returns RRF-ranked results.
+            relevant_results = ranked_results
 
         selected_results = relevant_results[:self.final_source_limit]
 
@@ -150,6 +177,7 @@ class RAGService:
 
         metrics["reranking_ms"] = reranking_time * 1000
         metrics["relevance_filtering_ms"] = filtering_time * 1000
+        metrics["reranker_enabled"] = float(self.enable_reranker)
         metrics["llm_response_ms"] = 0.0
 
         # 6. Handle No-Answer Cases.

@@ -47,3 +47,7 @@ docker-uploads-backup/
 Dockerfile.backup
 
 docker-compose.yml.backup
+
+# Local backup files
+*.backup
+app.py.before-demo-button-style

@@ -151,6 +151,27 @@ st.markdown("""
         min-height: 40px;
     }
 
+    /* Premium Live Demo Button */
+    .st-key-demo_login_button [data-testid="stBaseButton-secondary"],
+    .st-key-demo_login_button [data-testid="stButton"] button,
+    .st-key-demo_login_button button {
+        background: linear-gradient(100deg, #7C3AED 0%, #4F46E5 50%, #2563EB 100%) !important;
+        color: #FFFFFF !important;
+        border: 0 !important;
+        border-radius: 12px !important;
+        min-height: 50px !important;
+        font-size: 16px !important;
+        font-weight: 700 !important;
+        letter-spacing: 0.3px;
+        box-shadow: 0 5px 18px rgba(79, 70, 229, 0.30) !important;
+        transition: all 0.25s ease;
+    }
+    .st-key-demo_login_button button:hover {
+        background: linear-gradient(100deg, #6D28D9 0%, #4338CA 50%, #1D4ED8 100%) !important;
+        color: #FFFFFF !important;
+        transform: translateY(-2px);
+        box-shadow: 0 9px 25px rgba(79, 70, 229, 0.45) !important;
+    }
     div[data-testid="stChatMessage"] {
         background: #ffffff;
         border: 1px solid #e7edf5;
@@ -413,6 +434,42 @@ if not st.session_state.access_token:
                         "Please check the backend service."
                     )
 
+
+        if st.button(
+            "?? Try Live Demo",
+            use_container_width=True,
+            key="demo_login_button",
+        ):
+            try:
+                with st.spinner("Opening secure demo workspace..."):
+                    demo_response = httpx.post(
+                        f"{API_BASE_URL}/auth/demo-login",
+                        timeout=30.0,
+                    )
+                if demo_response.status_code == 200:
+                    demo_data = demo_response.json()
+                    token = demo_data.get("access_token")
+                    organizations = demo_data.get("organizations", [])
+                    demo_user = demo_data.get("user", {})
+                    if not token or not organizations:
+                        st.error("Demo authentication response is incomplete.")
+                    else:
+                        st.session_state.access_token = token
+                        st.session_state.user_email = demo_user.get("email", "demo")
+                        st.session_state.organizations = organizations
+                        st.session_state.organization_id = organizations[0]["id"]
+                        st.session_state.messages = []
+                        st.session_state.navigation_radio = "Dashboard"
+                        st.rerun()
+                else:
+                    st.error(
+                        f"Live demo unavailable: "
+                        f"{api_error_message(demo_response)}"
+                    )
+            except httpx.RequestError:
+                st.error(
+                    "Could not connect to the backend API. Please try again."
+                )
         st.divider()
 
         st.markdown(

@@ -17,6 +17,7 @@ from fastapi import (
 from pydantic import BaseModel, Field
 
 from backend.auth.dependencies import require_org_permission
+from database.connection import get_db_connection
 from database.document_service import DocumentService
 from ingestion.pipeline import IngestionPipeline
 from retrieval.rag_service import RAGService
@@ -44,6 +45,88 @@ class AskRequest(BaseModel):
         min_length=1,
         max_length=4000,
     )
+
+
+def resolve_source_names(
+    organization_id: UUID,
+    sources: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Resolve original document filenames from PostgreSQL."""
+
+    if not sources:
+        return sources
+
+    document_ids = set()
+
+    for source in sources:
+        raw_document_id = source.get("document_id")
+
+        if not raw_document_id:
+            continue
+
+        try:
+            document_ids.add(UUID(str(raw_document_id)))
+        except (ValueError, TypeError, AttributeError):
+            logger.warning(
+                "Invalid document ID found in RAG source metadata."
+            )
+
+    if not document_ids:
+        return sources
+
+    ordered_ids = sorted(document_ids, key=str)
+    placeholders = ", ".join(["%s"] * len(ordered_ids))
+
+    query = f"""
+        SELECT id, source_name
+        FROM documents
+        WHERE organization_id = %s
+          AND id IN ({placeholders})
+    """
+
+    try:
+        with get_db_connection() as connection:
+            rows = connection.execute(
+                query,
+                (organization_id, *ordered_ids),
+            ).fetchall()
+
+        filename_map = {
+            str(row[0]): row[1]
+            for row in rows
+            if row[0] is not None and row[1]
+        }
+
+        resolved_sources = []
+
+        for source in sources:
+            resolved_source = dict(source)
+
+            raw_document_id = resolved_source.get("document_id")
+
+            if raw_document_id:
+                try:
+                    document_id = str(UUID(str(raw_document_id)))
+
+                    original_filename = filename_map.get(
+                        document_id
+                    )
+
+                    if original_filename:
+                        resolved_source["source"] = original_filename
+
+                except (ValueError, TypeError, AttributeError):
+                    pass
+
+            resolved_sources.append(resolved_source)
+
+        return resolved_sources
+
+    except Exception:
+        logger.exception(
+            "Could not resolve original filenames for RAG citations."
+        )
+        return sources
 
 
 @router.get("/organizations/{organization_id}/access-check")
@@ -230,7 +313,6 @@ async def upload_document(
                 "Ingestion returned an invalid stored chunk count."
             )
 
-        # First confirm the new version in PostgreSQL.
         document_service.update_ingestion_status(
             organization_id=organization_id,
             document_id=registration["document_id"],
@@ -240,7 +322,6 @@ async def upload_document(
             chunk_count=chunk_count,
         )
 
-        # Only after DB completion, remove the previous Qdrant versions.
         cleanup_result = pipeline.cleanup_previous_versions(
             tenant_id=str(organization_id),
             document_id=str(registration["document_id"]),
@@ -302,8 +383,6 @@ async def upload_document(
     except Exception as exc:
         logger.exception("Document upload or ingestion failed.")
 
-        # If DB completion did not happen, remove only the new version.
-        # Previous Qdrant versions have not yet been deleted.
         if registration is not None and pipeline is not None:
             try:
                 pipeline.vector_store.delete_version(
@@ -378,12 +457,17 @@ def ask_organization_documents(
             tenant_id=verified_organization_id,
         )
 
+        sources = resolve_source_names(
+            organization_id=verified_organization_id,
+            sources=result.get("sources", []),
+        )
+
         return {
             "success": True,
             "organization_id": verified_organization_id,
             "question": result["question"],
             "answer": result["answer"],
-            "sources": result["sources"],
+            "sources": sources,
             "model": result["model"],
             "performance": result["performance"],
         }

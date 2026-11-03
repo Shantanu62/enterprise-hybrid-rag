@@ -1,4 +1,4 @@
-# Enterprise Hybrid RAG
+﻿# Enterprise Hybrid RAG
 
 A secure, multi-tenant Retrieval-Augmented Generation (RAG) application combining hybrid search, semantic retrieval, reranking, and LLM-powered responses.
 
@@ -87,49 +87,49 @@ The application combines vector search and keyword-based retrieval to improve se
 
 ```text
 enterprise-hybrid-rag/
-│
-├── app.py
-│
-├── backend/
-│   ├── main.py
-│   ├── api/
-│   │   ├── auth_routes.py
-│   │   └── routes.py
-│   └── auth/
-│       ├── bootstrap.py
-│       ├── dependencies.py
-│       ├── permissions.py
-│       ├── security.py
-│       └── service.py
-│
-├── core/
-│   ├── embeddings.py
-│   └── vector_store.py
-│
-├── database/
-│   ├── connection.py
-│   ├── schema.sql
-│   ├── document_service.py
-│   └── migrations/
-│
-├── ingestion/
-│   ├── pipeline.py
-│   ├── chunking.py
-│   └── loaders.py
-│
-├── retrieval/
-│   ├── bm25_index.py
-│   ├── hybrid_search.py
-│   ├── rag_service.py
-│   └── search_service.py
-│
-├── tests/
-│
-├── .env.example
-├── .gitignore
-├── pytest.ini
-├── requirements.txt
-└── requirements-dev.txt
+â”‚
+â”œâ”€â”€ app.py
+â”‚
+â”œâ”€â”€ backend/
+â”‚   â”œâ”€â”€ main.py
+â”‚   â”œâ”€â”€ api/
+â”‚   â”‚   â”œâ”€â”€ auth_routes.py
+â”‚   â”‚   â””â”€â”€ routes.py
+â”‚   â””â”€â”€ auth/
+â”‚       â”œâ”€â”€ bootstrap.py
+â”‚       â”œâ”€â”€ dependencies.py
+â”‚       â”œâ”€â”€ permissions.py
+â”‚       â”œâ”€â”€ security.py
+â”‚       â””â”€â”€ service.py
+â”‚
+â”œâ”€â”€ core/
+â”‚   â”œâ”€â”€ embeddings.py
+â”‚   â””â”€â”€ vector_store.py
+â”‚
+â”œâ”€â”€ database/
+â”‚   â”œâ”€â”€ connection.py
+â”‚   â”œâ”€â”€ schema.sql
+â”‚   â”œâ”€â”€ document_service.py
+â”‚   â””â”€â”€ migrations/
+â”‚
+â”œâ”€â”€ ingestion/
+â”‚   â”œâ”€â”€ pipeline.py
+â”‚   â”œâ”€â”€ chunking.py
+â”‚   â””â”€â”€ loaders.py
+â”‚
+â”œâ”€â”€ retrieval/
+â”‚   â”œâ”€â”€ bm25_index.py
+â”‚   â”œâ”€â”€ hybrid_search.py
+â”‚   â”œâ”€â”€ rag_service.py
+â”‚   â””â”€â”€ search_service.py
+â”‚
+â”œâ”€â”€ tests/
+â”‚
+â”œâ”€â”€ .env.example
+â”œâ”€â”€ .gitignore
+â”œâ”€â”€ pytest.ini
+â”œâ”€â”€ requirements.txt
+â””â”€â”€ requirements-dev.txt
 ```
 
 ## Getting Started
@@ -251,7 +251,7 @@ streamlit run app.py
 
 The application will be available at:
 
-http://localhost:8501
+http://localhost:8502
 
 ## API Endpoints
 

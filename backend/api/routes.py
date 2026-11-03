@@ -457,16 +457,39 @@ def ask_organization_documents(
             tenant_id=verified_organization_id,
         )
 
+        original_sources = result.get("sources", [])
+
+        # Resolve original filenames using organization-scoped PostgreSQL data.
         sources = resolve_source_names(
             organization_id=verified_organization_id,
-            sources=result.get("sources", []),
+            sources=original_sources,
         )
+
+        # Replace hashed filenames in the generated answer with original names.
+        answer = result["answer"]
+
+        for original_source, resolved_source in zip(
+            original_sources,
+            sources,
+        ):
+            old_filename = original_source.get("source")
+            original_filename = resolved_source.get("source")
+
+            if (
+                old_filename
+                and original_filename
+                and old_filename != original_filename
+            ):
+                answer = answer.replace(
+                    str(old_filename),
+                    str(original_filename),
+                )
 
         return {
             "success": True,
             "organization_id": verified_organization_id,
             "question": result["question"],
-            "answer": result["answer"],
+            "answer": answer,
             "sources": sources,
             "model": result["model"],
             "performance": result["performance"],

@@ -1,4 +1,3 @@
-
 import os
 import time
 from typing import Any
@@ -214,14 +213,27 @@ class RAGService:
 
             source = metadata.get("source", "unknown")
             page = metadata.get("page")
+            chunk_index = metadata.get("chunk_index")
+            file_type = metadata.get("file_type")
+            document_id = metadata.get("document_id")
+            version_id = metadata.get("version_id")
 
             context_parts.append(
                 f"[Source {index}: {source}]\n{text}"
             )
 
             source_info = {
+                "citation_id": f"S{index}",
                 "source": source,
                 "page": page,
+                "chunk_indices": (
+                    [chunk_index]
+                    if chunk_index is not None
+                    else []
+                ),
+                "file_type": file_type,
+                "document_id": document_id,
+                "version_id": version_id,
                 "reranker_score": result.get("reranker_score"),
             }
 
